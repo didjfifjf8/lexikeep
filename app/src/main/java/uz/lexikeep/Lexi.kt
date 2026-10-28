@@ -466,4 +466,197 @@ fun App(vm: VM = viewModel()) {
     ) { pad ->
         Surface(Modifier.padding(pad).fillMaxSize()) {
             when (screen) {
-                Screen.Home -> HomeScre
+                Screen.Home -> HomeScreen(vm)
+                Screen.Vocab -> VocabScreen(vm)
+                Screen.Stats -> StatsScreen(vm)
+                Screen.Settings -> SettingsScreen(vm)
+                Screen.Learn -> LearnScreen(vm)
+                is Screen.Detail -> DetailScreen(vm, screen.id)
+            }
+        }
+    }
+}
+
+fun startOfDay(): Long = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+
+fun streak(reviews: List<Review>): Int {
+    val zone = ZoneId.systemDefault()
+    val days = reviews.map { Instant.ofEpochMilli(it.at).atZone(zone).toLocalDate() }.toSet()
+    var d = LocalDate.now()
+    if (d !in days) d = d.minusDays(1)
+    var n = 0
+    while (d in days) { n++; d = d.minusDays(1) }
+    return n
+}
+
+@Composable
+fun StatCard(n: String, label: String, m: Modifier) {
+    Card(m) {
+        Column(Modifier.padding(12.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(n, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+            Text(label, style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center)
+        }
+    }
+}
+
+@Composable
+fun HomeScreen(vm: VM) {
+    val words by vm.words.collectAsState()
+    val reviews by vm.reviews.collectAsState()
+    val now = System.currentTimeMillis()
+    val start = startOfDay()
+    val due = words.count { it.translation.isNotBlank() && it.dueAt <= now }
+    var text by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("LexiKeep", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StatCard("$due", "Takrorlash kerak", Modifier.weight(1f))
+            StatCard("${words.count { it.addedAt >= start }}", "Bugun saqlandi", Modifier.weight(1f))
+            StatCard("${streak(reviews)}", "Kunlik seriya", Modifier.weight(1f))
+        }
+        Text("Bugungi takrorlar: ${reviews.count { it.at >= start }}", style = MaterialTheme.typography.bodyMedium)
+        Button(onClick = { vm.openLearn() }, Modifier.fillMaxWidth().height(56.dp)) { Text("Mashqni boshlash", fontSize = 18.sp) }
+        OutlinedButton(onClick = { vm.screen = Screen.Vocab }, Modifier.fillMaxWidth()) { Text("Saqlangan lug'atim (${words.size})") }
+        Text("Tez qo'shish", style = MaterialTheme.typography.titleSmall)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(text, { text = it }, Modifier.weight(1f), label = { Text("Inglizcha so'z yoki gap") })
+            Button(onClick = { vm.quickAdd(text); text = "" }, enabled = text.isNotBlank()) { Text("Saqlash") }
+        }
+        vm.message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+        Text("Maslahat: boshqa ilovada so'zni belgilang va menyudagi «Lexi» tugmasini bosing.",
+            style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun VocabScreen(vm: VM) {
+    val words by vm.words.collectAsState()
+    var q by rememberSaveable { mutableStateOf("") }
+    var pos by rememberSaveable { mutableStateOf<String?>(null) }
+    var topic by rememberSaveable { mutableStateOf<String?>(null) }
+    var fav by rememberSaveable { mutableStateOf(false) }
+    var sort by rememberSaveable { mutableIntStateOf(0) }
+    var sel by remember { mutableStateOf(setOf<Long>()) }
+    var confirm by remember { mutableStateOf(false) }
+
+    val poss = words.map { it.pos }.filter { it.isNotBlank() }.distinct()
+    val topics = words.flatMap { it.topicList() }.distinct().sorted()
+    val filtered = words.filter {
+        (q.isBlank() || it.text.contains(q, true) || it.translation.contains(q, true)) &&
+            (pos == null || it.pos == pos) && (topic == null || it.topicList().contains(topic)) && (!fav || it.favorite)
+    }
+    val list = when (sort) {
+        0 -> filtered.sortedByDescending { it.addedAt }
+        1 -> filtered.sortedBy { it.addedAt }
+        2 -> filtered.sortedWith(compareBy<Word>({ it.ease }, { -it.lapses }))
+        else -> filtered.sortedByDescending { it.lapses }
+    }
+
+    Column(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        OutlinedTextField(q, { q = it }, Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true,
+            label = { Text("Qidirish (inglizcha yoki o'zbekcha)") })
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { FilterChip(pos == null, { pos = null }, { Text("Hammasi") }) }
+            items(poss) { p -> FilterChip(pos == p, { pos = if (pos == p) null else p }, { Text(posUz(p)) }) }
+        }
+        if (topics.isNotEmpty()) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(topics) { t -> FilterChip(topic == t, { topic = if (topic == t) null else t }, { Text("# $t") }) }
+            }
+        }
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { FilterChip(fav, { fav = !fav }, { Text("★ Sevimli") }) }
+            val labels = listOf("Yangi", "Eski", "Qiyin", "Ko'p unutilgan")
+            items(labels.indices.toList()) { i -> FilterChip(sort == i, { sort = i }, { Text(labels[i]) }) }
+        }
+        if (sel.isNotEmpty()) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("${sel.size} ta tanlandi", Modifier.weight(1f))
+                TextButton({ sel = emptySet() }) { Text("Bekor") }
+                Button({ confirm = true }) { Text("O'chirish") }
+            }
+        }
+        if (list.isEmpty()) Text("Hozircha so'z yo'q.", Modifier.padding(16.dp))
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(list, key = { it.id }) { w ->
+                Card(
+                    Modifier.fillMaxWidth().combinedClickable(
+                        onClick = {
+                            if (sel.isNotEmpty()) { sel = if (w.id in sel) sel - w.id else sel + w.id }
+                            else { vm.screen = Screen.Detail(w.id) }
+                        },
+                        onLongClick = { sel = sel + w.id }),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (w.id in sel) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(w.text, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                            Text(when {
+                                w.translation.isNotBlank() -> w.translation
+                                w.enrichError.isNotBlank() -> "⚠ ${w.enrichError}"
+                                else -> "tarjima kutilmoqda…"
+                            })
+                            Text("${posUz(w.pos)} · ${w.status()}", style = MaterialTheme.typography.labelSmall)
+                        }
+                        if (w.favorite) Text("★", fontSize = 20.sp)
+                    }
+                }
+            }
+        }
+    }
+    if (confirm) {
+        AlertDialog(onDismissRequest = { confirm = false },
+            title = { Text("O'chirilsinmi?") }, text = { Text("${sel.size} ta yozuv butunlay o'chiriladi.") },
+            confirmButton = { TextButton({ vm.delete(sel.toList()); sel = emptySet(); confirm = false }) { Text("O'chirish") } },
+            dismissButton = { TextButton({ confirm = false }) { Text("Bekor") } })
+    }
+}
+
+@Composable
+fun DetailScreen(vm: VM, id: Long) {
+    val words by vm.words.collectAsState()
+    val reviews by vm.reviews.collectAsState()
+    val w = words.find { it.id == id }
+    if (w == null) { LaunchedEffect(Unit) { vm.screen = Screen.Vocab }; return }
+    var tr by remember(w.id, w.translation) { mutableStateOf(w.translation) }
+    var tp by remember(w.id, w.topics) { mutableStateOf(w.topics) }
+    var note by remember(w.id) { mutableStateOf(w.note) }
+    var confirm by remember { mutableStateOf(false) }
+    val fmt = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault())
+    Column(Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        TextButton({ vm.screen = Screen.Vocab }) { Text("← Orqaga") }
+        Text(w.text, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton({ vm.speaker.speak(w.text) }) { Text("🔊 Talaffuz") }
+            OutlinedButton({ vm.update(w.copy(favorite = !w.favorite)) }) { Text(if (w.favorite) "★ Sevimli" else "☆ Sevimli") }
+        }
+        if (w.ipa.isNotBlank()) Text(w.ipa)
+        Text("${posUz(w.pos)} · ${w.status()}", style = MaterialTheme.typography.labelLarge)
+        if (w.translation.isBlank()) {
+            Text(if (w.enrichError.isNotBlank()) "⚠ ${w.enrichError}" else "Tarjima hali olinmagan")
+            Button({ vm.retry(w.id) }) { Text("Qayta urinish") }
+        }
+        OutlinedTextField(tr, { tr = it }, Modifier.fillMaxWidth(), label = { Text("O'zbekcha tarjima (tahrirlash mumkin)") })
+        if (w.definition.isNotBlank()) Text("Ta'rif: ${w.definition}")
+        if (w.example.isNotBlank()) Text("Misol: ${w.example}")
+        OutlinedTextField(tp, { tp = it }, Modifier.fillMaxWidth(), label = { Text("Mavzular (vergul bilan: travel, technology)") })
+        OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth(), label = { Text("Shaxsiy izoh") })
+        Button({
+            val topics = tp.split(",").map { it.trim() }.filter { it.isNotEmpty() }.distinct().joinToString(",")
+            vm.update(w.copy(translation = tr.trim(), topics = topics, note = note, enrichError = ""))
+            vm.message = null
+        }, Modifier.fillMaxWidth()) { Text("Saqlash") }
+        Text("Keyingi takror: ${fmt.format(Date(w.dueAt))}", style = MaterialTheme.typography.bodySmall)
+        Text("Takrorlash tarixi", style = MaterialTheme.typography.titleSmall)
+        val logs = reviews.filter { it.wordId == w.id }
+        if (logs.isEmpty()) Text("Hali yo'q") else logs.take(20).forEach { Text("${fmt.format(Date(it.at))} — ${it.result}") }
+        OutlinedButton({ confirm = true }, Modifier.fillMaxWidth()) { Text("O'chirish") }
+    }
+    if (confirm) {
+        AlertDialog(onDismissRequest = { confirm = false }, title = { Text("O'chirilsinmi?") },
+            confirmButton = { TextButton({ confirm = false; vm.screen = Screen.Vocab; vm.delete(listOf(w.id)) }) { Text("O'chirish") } },
+            dismissButton = { TextButton({ confirm = false }) { Text("Bekor") } })
+    }
+}
